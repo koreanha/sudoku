@@ -106,13 +106,36 @@ body{
 
 /* 줄/박스 완성 깜빡임은 JS로 직접 제어 */
 
+/* ── 오답 입력 시 흔들림 효과 ── */
+@keyframes shake{
+  0%  { transform:translateX(0); }
+  15% { transform:translateX(-5px); }
+  30% { transform:translateX(5px); }
+  45% { transform:translateX(-4px); }
+  60% { transform:translateX(4px); }
+  75% { transform:translateX(-2px); }
+  90% { transform:translateX(2px); }
+  100%{ transform:translateX(0); }
+}
+.cell.shake{
+  animation:shake 0.42s ease-out forwards;
+  box-shadow:inset 0 0 0 2px rgba(224,92,92,.85);
+  z-index:2;
+}
+
 /* ── 메모 숫자 (3×3 격자) ── */
 .notes{display:grid;grid-template-columns:repeat(3,1fr);width:100%;height:100%;}
 .notes span{
   display:flex;align-items:center;justify-content:center;
-  font-size:calc(var(--cell)*0.18);color:#c8a96e;
-  font-family:'IBM Plex Mono',monospace;opacity:.85;font-weight:400;
+  font-size:calc(var(--cell)*0.18);color:#a0c4ff;
+  font-family:'IBM Plex Mono',monospace;opacity:.9;font-weight:600;
 }
+/* 선택된 셀(골드 배경)에서는 메모 숫자를 어두운 색으로 */
+.cell.hl-sel .notes span{color:#1a1a2e;opacity:1;}
+/* 같은 숫자·줄·박스 하이라이트에서는 밝게 유지 */
+.cell.hl-same .notes span,
+.cell.hl-line .notes span,
+.cell.hl-box  .notes span{color:#b8d8ff;opacity:.95;}
 
 /* ── 숫자패드: 항상 한 줄, 보드와 동일 너비 ── */
 #numpad{
@@ -155,6 +178,35 @@ body{
 }
 .act-btn:hover{background:rgba(200,169,110,.15);border-color:#c8a96e;}
 .act-btn.on{background:rgba(200,169,110,.18);border-color:#c8a96e;color:#c8a96e;}
+
+/* ── 메모 전용 숫자패드 (한 줄) ── */
+#memo-pad{
+  display:none;
+  flex-wrap:nowrap;
+  gap:3px;
+  width:calc(var(--board) + 4px);
+  margin-bottom:8px;
+}
+#memo-pad.show{display:flex;}
+.memo-btn{
+  flex:1;min-width:0;
+  height:calc(var(--cell) * 0.72);
+  background:rgba(100,160,255,.08);
+  border:1px solid rgba(100,160,255,.25);
+  border-radius:8px;
+  color:rgba(180,210,255,.85);
+  font-size:calc(var(--font) * 0.82);
+  font-family:'Noto Sans KR',sans-serif;font-weight:700;
+  cursor:pointer;transition:all .15s;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent;
+}
+.memo-btn:hover{background:rgba(100,160,255,.2);border-color:rgba(100,160,255,.5);color:#b4d2ff;}
+.memo-btn.memo-on{
+  background:rgba(100,160,255,.28);
+  border-color:rgba(130,180,255,.7);
+  color:#ddeeff;
+}
 
 /* ── 완성 오버레이 ── */
 #win-overlay{
@@ -277,8 +329,10 @@ body{
 <div id="board"></div>
 <div id="numpad"></div>
 
+<div id="memo-pad"></div>
 <div id="actions">
   <button class="act-btn" id="btn-note">✏️ 메모</button>
+  <button class="act-btn" id="btn-undo">↩ 취소</button>
   <button class="act-btn" id="btn-erase">⌫ 지우기</button>
   <button class="act-btn" id="btn-new">🔄 새 게임</button>
   <button class="act-btn" id="btn-hist">📊 기록</button>
@@ -469,7 +523,8 @@ let S={
   noteMode:false,
   done:false,
   timer:0, mistakes:0,
-  doneRows:new Set(), doneCols:new Set(), doneBoxes:new Set()
+  doneRows:new Set(), doneCols:new Set(), doneBoxes:new Set(),
+  history:[]         // undo 스택: 직전 상태 1개만 보관
 };
 let _timer=null;
 
@@ -502,7 +557,8 @@ function newGame(diff){
     diff, sol, puz:makePuzzle(sol,diff),
     board:null, sel:null, errors:new Set(), notes:{}, noteMode:false,
     done:false, timer:0, mistakes:0,
-    doneRows:new Set(), doneCols:new Set(), doneBoxes:new Set()
+    doneRows:new Set(), doneCols:new Set(), doneBoxes:new Set(),
+    history:[]
   };
   S.board=S.puz.map(r=>[...r]);
 
@@ -519,12 +575,22 @@ function inputNum(num){
   const {r,c}=S.sel;
   if(S.puz[r][c]!==0) return; // 주어진 숫자 보호
 
+  // ── 현재 상태 스냅샷 저장 (undo용, 메모/숫자 입력 공통) ──
+  S.history=[{
+    r, c,
+    prevVal: S.board[r][c],
+    prevNote: S.notes[r+','+c] ? new Set(S.notes[r+','+c]) : null,
+    prevErr: S.errors.has(r+','+c),
+    prevMistakes: S.mistakes,
+  }];
+
   // ── 메모 모드 ──
   if(S.noteMode){
     const k=r+','+c;
     if(!S.notes[k]) S.notes[k]=new Set();
     if(S.notes[k].has(num)) S.notes[k].delete(num); else S.notes[k].add(num);
     renderCell(r,c);
+    renderMemoPad();
     return;
   }
 
@@ -533,11 +599,12 @@ function inputNum(num){
   delete S.notes[r+','+c];
 
   if(S.sol[r][c]!==num){
-    // 오답: 빨간 표시 + 경고음
+    // 오답: 빨간 표시 + 경고음 + 흔들림
     S.errors.add(r+','+c);
     S.mistakes++;
     sfxErr();
     renderCell(r,c); renderStats(); renderNumpad();
+    shakeCell(r,c);
     return;
   }
 
@@ -598,6 +665,32 @@ function inputNum(num){
   }
 }
 
+// 실행 취소 (직전 입력 1회)
+function undoLast(){
+  if(S.done || !S.history.length) return;
+  const h=S.history.pop();
+  const {r,c,prevVal,prevNote,prevErr,prevMistakes}=h;
+
+  // 값 복원
+  S.board[r][c]=prevVal;
+
+  // 오류 복원
+  if(prevErr) S.errors.add(r+','+c);
+  else        S.errors.delete(r+','+c);
+
+  // 메모 복원
+  if(prevNote) S.notes[r+','+c]=new Set(prevNote);
+  else         delete S.notes[r+','+c];
+
+  // 실수 카운트 복원
+  S.mistakes=prevMistakes;
+
+  // 선택 셀 복원
+  S.sel={r,c};
+
+  renderCell(r,c); renderStats(); renderNumpad(); renderHighlight();
+}
+
 // 지우기
 function eraseCell(){
   if(!S.sel||S.done) return;
@@ -612,6 +705,16 @@ function eraseCell(){
 // ─────────────────────────────────────────────
 //  깜빡임 애니메이션
 // ─────────────────────────────────────────────
+// 오답 흔들림 효과
+function shakeCell(r,c){
+  const el=document.querySelector('[data-r="'+r+'"][data-c="'+c+'"]');
+  if(!el) return;
+  el.classList.remove('shake');
+  void el.offsetWidth;
+  el.classList.add('shake');
+  setTimeout(()=>el.classList.remove('shake'), 450);
+}
+
 function flashCells(keys){
   const unique=[...new Set(keys)];
   unique.forEach(k=>{
@@ -671,12 +774,14 @@ function renderCell(r,c){
   const isErr=S.errors.has(r+','+c);
   const ns=S.notes[r+','+c];
   const hl=getCellHL(r,c);
-  // br·bb만 보존, flashing은 JS inline style로 별도 관리
+  // br·bb·shake 보존, flashing은 JS inline style로 별도 관리
   const wasBR=el.classList.contains('br');
   const wasBB=el.classList.contains('bb');
+  const wasShake=el.classList.contains('shake');
   el.className='cell'
     +(wasBR?' br':'')
-    +(wasBB?' bb':'');
+    +(wasBB?' bb':'')
+    +(wasShake?' shake':'');
   if(hl)      el.classList.add(hl);
   if(isGiven) el.classList.add('given');
   else if(isErr) el.classList.add('user-err');
@@ -695,6 +800,7 @@ function renderCell(r,c){
 
 function renderHighlight(){
   for(let r=0;r<9;r++) for(let c=0;c<9;c++) renderCell(r,c);
+  renderMemoPad();
 }
 
 function renderStats(){
@@ -749,15 +855,41 @@ function buildNumpad(){
   }
 }
 
+function buildMemoPad(){
+  const wrap=$('memo-pad');
+  wrap.innerHTML='';
+  for(let n=1;n<=9;n++){
+    const btn=document.createElement('button');
+    btn.className='memo-btn';
+    btn.dataset.n=n;
+    btn.textContent=n;
+    btn.addEventListener('click',()=>inputNum(n));
+    wrap.appendChild(btn);
+  }
+}
+
+// 메모패드 버튼 활성 상태 업데이트 (선택 셀의 메모 반영)
+function renderMemoPad(){
+  if(!S.noteMode) return;
+  const sel=S.sel;
+  const ns=sel ? (S.notes[sel.r+','+sel.c]||new Set()) : new Set();
+  $('memo-pad').querySelectorAll('.memo-btn').forEach(btn=>{
+    btn.classList.toggle('memo-on', ns.has(+btn.dataset.n));
+  });
+}
+
 function renderAll(){
   renderStats();
   buildBoard();
   buildNumpad();
-  renderNumpad(); // 완성된 숫자 어둡게 반영
+  renderNumpad();
+  buildMemoPad();
   // 메모 버튼 상태
   const nb=$('btn-note');
-  nb.textContent='✏️ 메모 '+(S.noteMode?'ON':'OFF');
+  nb.textContent='✏️ 메모';
   nb.classList.toggle('on',S.noteMode);
+  $('memo-pad').classList.toggle('show',S.noteMode);
+  renderMemoPad();
 }
 
 // ─────────────────────────────────────────────
@@ -824,9 +956,14 @@ function closeHist(){ $('hist-overlay').classList.remove('show'); }
 $('btn-note').addEventListener('click',()=>{
   S.noteMode=!S.noteMode;
   const b=$('btn-note');
-  b.textContent='✏️ 메모 '+(S.noteMode?'ON':'OFF');
+  b.textContent='✏️ 메모';
   b.classList.toggle('on',S.noteMode);
+  $('memo-pad').classList.toggle('show',S.noteMode);
+  renderMemoPad();
 });
+
+// 실행 취소
+$('btn-undo').addEventListener('click',undoLast);
 
 // 지우기
 $('btn-erase').addEventListener('click',eraseCell);
@@ -874,6 +1011,7 @@ document.addEventListener('visibilitychange',()=>{
     S.doneCols=new Set(saved.doneCols);
     S.doneBoxes=new Set(saved.doneBoxes);
     S.sel=null;
+    S.history=[];
     renderAll();
     if(!S.done) timerStart();
   } else {
