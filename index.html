@@ -106,22 +106,7 @@ body{
 
 /* 줄/박스 완성 깜빡임은 JS로 직접 제어 */
 
-/* ── 오답 입력 시 흔들림 효과 ── */
-@keyframes shake{
-  0%  { transform:translateX(0); }
-  15% { transform:translateX(-5px); }
-  30% { transform:translateX(5px); }
-  45% { transform:translateX(-4px); }
-  60% { transform:translateX(4px); }
-  75% { transform:translateX(-2px); }
-  90% { transform:translateX(2px); }
-  100%{ transform:translateX(0); }
-}
-.cell.shake{
-  animation:shake 0.42s ease-out forwards;
-  box-shadow:inset 0 0 0 2px rgba(224,92,92,.85);
-  z-index:2;
-}
+/* ── 오답 흔들림: JS Web Animations API로 직접 제어 ── */
 
 /* ── 메모 숫자 (3×3 격자) ── */
 .notes{display:grid;grid-template-columns:repeat(3,1fr);width:100%;height:100%;}
@@ -706,14 +691,21 @@ function eraseCell(){
 // ─────────────────────────────────────────────
 //  깜빡임 애니메이션
 // ─────────────────────────────────────────────
-// 오답 흔들림 효과
+// 오답 흔들림: Web Animations API (renderCell과 완전히 독립)
 function shakeCell(r,c){
   const el=document.querySelector('[data-r="'+r+'"][data-c="'+c+'"]');
   if(!el) return;
-  el.classList.remove('shake');
-  void el.offsetWidth;
-  el.classList.add('shake');
-  setTimeout(()=>el.classList.remove('shake'), 450);
+  // 이전 애니메이션 취소
+  if(el._shakeAnim) el._shakeAnim.cancel();
+  el._shakeAnim = el.animate([
+    {transform:'translateX(0)',    color:''},
+    {transform:'translateX(-6px)', color:'#e05c5c', offset:0.15},
+    {transform:'translateX(6px)',  color:'#e05c5c', offset:0.30},
+    {transform:'translateX(-5px)', color:'#e05c5c', offset:0.45},
+    {transform:'translateX(5px)',  color:'#e05c5c', offset:0.60},
+    {transform:'translateX(-2px)', color:'#e05c5c', offset:0.78},
+    {transform:'translateX(0)',    color:'',         offset:1.0},
+  ], {duration:420, easing:'ease-out', fill:'none'});
 }
 
 function flashCells(keys){
@@ -775,14 +767,12 @@ function renderCell(r,c){
   const isErr=S.errors.has(r+','+c);
   const ns=S.notes[r+','+c];
   const hl=getCellHL(r,c);
-  // br·bb·shake 보존, flashing은 JS inline style로 별도 관리
+  // br·bb만 보존
   const wasBR=el.classList.contains('br');
   const wasBB=el.classList.contains('bb');
-  const wasShake=el.classList.contains('shake');
   el.className='cell'
     +(wasBR?' br':'')
-    +(wasBB?' bb':'')
-    +(wasShake?' shake':'');
+    +(wasBB?' bb':'');
   if(hl)      el.classList.add(hl);
   if(isGiven) el.classList.add('given');
   else if(isErr) el.classList.add('user-err');
